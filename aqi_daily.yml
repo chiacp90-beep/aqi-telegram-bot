@@ -2,8 +2,8 @@ name: Daily AQI Check
 
 on:
   schedule:
-    - cron: "0 5 * * *"   # Every day at 5:00 AM UTC
-  workflow_dispatch:       # Allow manual runs too
+    - cron: "0 21 * * *"   # 5:00 AM Malaysia time (UTC+8) = 21:00 UTC
+  workflow_dispatch:
 
 jobs:
   aqi-check:
@@ -22,6 +22,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CITY: "Beijing"        # ← Change to your city!
-          COUNTRY: "cn"          # ← Change to your country!
         run: python aqi_check.py
