@@ -1,64 +1,84 @@
-import requests
-import json
 import os
+import sys
+import html
+import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+import requests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+WAQI_TOKEN = os.environ["WAQI_TOKEN"]
 
-# ── Putrajaya, Malaysia ──────────────────────────────────────
-LAT = 2.9333
-LON = 101.65
-TIMEZONE = "Asia%2FKuala_Lumpur"   # URL-encoded
+# Putrajaya station on aqicn.org (Malaysia DOE). Fallback: search by city name.
+STATION_CANDIDATES = ["@H10485", "putrajaya"]
+
+MYT = timezone(timedelta(hours=8))
+
+
+def to_number(value):
+    """aqicn returns '-' when a value is missing; convert safely."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def get_aqi():
-    """Fetch PM2.5 for Putrajaya using Open-Meteo API."""
-    # Manually build URL so "true" stays lowercase (avoids 404!)
-    url = (
-        f"https://api.open-meteo.com/v1/air-quality"
-        f"?latitude={LAT}"
-        f"&longitude={LON}"
-        f"&current_air_quality=true"
-        f"&timezone={TIMEZONE}"
-    )
-    logging.info(f"Requesting URL: {url}")
+    """Fetch current AQI for Putrajaya from the aqicn (WAQI) API."""
+    for station in STATION_CANDIDATES:
+        url = f"https://api.waqi.info/feed/{station}/"
+        for attempt in range(1, 4):
+            try:
+                resp = requests.get(url, params={"token": WAQI_TOKEN}, timeout=20)
+                logging.info(f"[{station}] attempt {attempt}: HTTP {resp.status_code}")
+                resp.raise_for_status()
+                payload = resp.json()
 
-    try:
-        resp = requests.get(url, timeout=15)
-        logging.info(f"Status code: {resp.status_code}")
-        resp.raise_for_status()
-        data = resp.json()
+                if payload.get("status") != "ok":
+                    # e.g. {"status":"error","data":"Invalid key"} or "Unknown station"
+                    logging.error(f"[{station}] API said: {payload}")
+                    break  # no point retrying this station
 
-        logging.info(f"Full response: {json.dumps(data)[:300]}")
+                data = payload["data"]
+                iaqi = data.get("iaqi", {})
+                result = {
+                    "aqi": to_number(data.get("aqi")),
+                    "pm25": to_number(iaqi.get("pm25", {}).get("v")),
+                    "pm10": to_number(iaqi.get("pm10", {}).get("v")),
+                    "temp": to_number(iaqi.get("t", {}).get("v")),
+                    "station": data.get("city", {}).get("name", "Putrajaya"),
+                    "updated": data.get("time", {}).get("s", ""),
+                }
+                if result["aqi"] is None:
+                    logging.error(f"[{station}] no AQI value in response: {payload}")
+                    break
+                logging.info(f"[{station}] OK: {result}")
+                return result
 
-        air_quality = data.get("current_air_quality", {})
-        pm25 = air_quality.get("pm2_5")
-        return pm25
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"API request failed: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        return None
+            except requests.exceptions.RequestException as e:
+                logging.error(f"[{station}] request failed: {e}")
+                time.sleep(3)
+            except Exception as e:
+                logging.error(f"[{station}] unexpected error: {e}")
+                break
+    return None
 
 
-def get_category(pm25):
-    if pm25 is None:
-        return "❓ Unavailable"
-    elif pm25 <= 12:
+def get_category(aqi):
+    """US EPA AQI categories (aqicn values are on this scale)."""
+    if aqi <= 50:
         return "🟢 Good"
-    elif pm25 <= 35.4:
+    elif aqi <= 100:
         return "🟡 Moderate"
-    elif pm25 <= 55.4:
-        return "🟠 Unhealthy (Sensitive)"
-    elif pm25 <= 150.4:
+    elif aqi <= 150:
+        return "🟠 Unhealthy for Sensitive Groups"
+    elif aqi <= 200:
         return "🔴 Unhealthy"
-    elif pm25 <= 250.4:
+    elif aqi <= 300:
         return "🟣 Very Unhealthy"
     else:
         return "🟤 Hazardous"
@@ -67,32 +87,45 @@ def get_category(pm25):
 def send_to_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        resp = requests.post(url, json=payload, timeout=10)
-        resp.raise_for_status()
-        logging.info("Message sent to Telegram!")
-    except Exception as e:
-        logging.error(f"Telegram error: {e}")
+    resp = requests.post(url, json=payload, timeout=15)
+    resp.raise_for_status()
+    logging.info("Message sent to Telegram!")
 
 
 def main():
-    now = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(MYT).strftime("%Y-%m-%d")
     logging.info("Fetching AQI for Putrajaya...")
-    pm25 = get_aqi()
+    r = get_aqi()
 
-    if pm25 is not None:
-        category = get_category(pm25)
-        msg = (
-            f"🌅 <b>Morning AQI Report</b>\n"
-            f"📍 <b>Putrajaya, Malaysia</b>\n"
-            f"📊 <b>PM2.5:</b> {pm25:.1f} µg/m³\n"
-            f"🏷️ <b>{category}</b>\n"
-            f"🕐 <b>{now}</b>"
-        )
+    if r:
+        lines = [
+            "🌅 <b>Morning AQI Report</b>",
+            f"📍 <b>{html.escape(r['station'])}</b>",
+            f"📊 <b>Overall AQI:</b> {r['aqi']:.0f}",
+            f"🏷️ <b>{get_category(r['aqi'])}</b>",
+        ]
+        if r["pm25"] is not None:
+            lines.append(f"🌫️ PM2.5 AQI: {r['pm25']:.0f}")
+        if r["pm10"] is not None:
+            lines.append(f"💨 PM10 AQI: {r['pm10']:.0f}")
+        if r["temp"] is not None:
+            lines.append(f"🌡️ Temp: {r['temp']:.0f}°C")
+        if r["updated"]:
+            lines.append(f"🕐 Station update: {html.escape(r['updated'])}")
+        else:
+            lines.append(f"🕐 {today}")
+        msg = "\n".join(lines)
     else:
-        msg = f"⚠️ Could not fetch AQI for Putrajaya on {now}"
+        msg = f"⚠️ Could not fetch AQI for Putrajaya on {today}"
 
-    send_to_telegram(msg)
+    try:
+        send_to_telegram(msg)
+    except Exception as e:
+        logging.error(f"Telegram error: {e}")
+        sys.exit(1)
+
+    if not r:
+        sys.exit(1)  # makes the GitHub Action show red so you notice
 
 
 if __name__ == "__main__":
