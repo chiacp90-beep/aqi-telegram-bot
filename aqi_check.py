@@ -19,13 +19,16 @@ def get_aqi():
     params = {
         "latitude": LAT,
         "longitude": LON,
-        "current_air_quality": True,   # ← THIS IS THE FIX!
+        "current_air_quality": "true",   # ← String "true", not Python True!
         "timezone": "Asia/Shanghai",
     }
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
+
+        # Debug: print raw response to see the structure
+        logging.info(f"Raw response keys: {data.keys()}")
 
         air_quality = data.get("current_air_quality", {})
         pm25 = air_quality.get("pm2_5")
@@ -69,7 +72,7 @@ def send_to_telegram(message):
 
 def main():
     now = datetime.now().strftime("%Y-%m-%d")
-    logging.info(f"Fetching AQI for Beijing...")
+    logging.info("Fetching AQI for Beijing...")
     pm25 = get_aqi()
 
     if pm25 is not None:
