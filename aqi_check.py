@@ -3,63 +3,86 @@ import os
 import logging
 from datetime import datetime
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
-CITY               = os.environ.get("CITY", "Beijing")
-COUNTRY            = os.environ.get("COUNTRY", "cn")
+
+# Beijing coordinates
+LAT = 39.9042
+LON = 116.4074
 
 
-def get_aqi(city: str, country: str):
+def get_aqi():
+    """Fetch PM2.5 using Open-Meteo Air Quality API."""
     url = "https://api.open-meteo.com/v1/air-quality"
     params = {
-        "latitude": 39.9 if city == "Beijing" else 34.05,
-        "longitude": 116.4 if city == "Beijing" else -118.25,
-        "current": "pm2_5",
+        "latitude": LAT,
+        "longitude": LON,
+        "current_air_quality": True,   # ← THIS IS THE FIX!
+        "timezone": "Asia/Shanghai",
     }
     try:
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-        return data["current"]["pm2_5"]
+
+        air_quality = data.get("current_air_quality", {})
+        pm25 = air_quality.get("pm2_5")
+        return pm25
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"API request failed: {e}")
+        return None
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"Unexpected error: {e}")
         return None
 
 
-def send_to_telegram(message: str):
+def get_category(pm25):
+    if pm25 is None:
+        return "❓ Unavailable"
+    elif pm25 <= 12:
+        return "🟢 Good"
+    elif pm25 <= 35.4:
+        return "🟡 Moderate"
+    elif pm25 <= 55.4:
+        return "🟠 Unhealthy (Sensitive)"
+    elif pm25 <= 150.4:
+        return "🔴 Unhealthy"
+    elif pm25 <= 250.4:
+        return "🟣 Very Unhealthy"
+    else:
+        return "🟤 Hazardous"
+
+
+def send_to_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         resp = requests.post(url, json=payload, timeout=10)
         resp.raise_for_status()
-        logging.info("Message sent!")
+        logging.info("Message sent to Telegram!")
     except Exception as e:
         logging.error(f"Telegram error: {e}")
 
 
 def main():
     now = datetime.now().strftime("%Y-%m-%d")
-    pm25 = get_aqi(CITY, COUNTRY)
+    logging.info(f"Fetching AQI for Beijing...")
+    pm25 = get_aqi()
 
     if pm25 is not None:
-        if pm25 <= 12:
-            cat = "🟢 Good"
-        elif pm25 <= 35.4:
-            cat = "🟡 Moderate"
-        elif pm25 <= 55.4:
-            cat = "🟠 Unhealthy (Sensitive)"
-        elif pm25 <= 150.4:
-            cat = "🔴 Unhealthy"
-        elif pm25 <= 250.4:
-            cat = "🟣 Very Unhealthy"
-        else:
-            cat = "🟤 Hazardous"
-
-        msg = f"🌅 <b>Morning AQI Report</b>\n📍 {CITY}\n📊 PM2.5: {pm25:.1f} µg/m³\n🏷️ {cat}\n🕐 {now}"
+        category = get_category(pm25)
+        msg = (
+            f"🌅 <b>Morning AQI Report</b>\n"
+            f"📍 <b>Beijing</b>\n"
+            f"📊 <b>PM2.5:</b> {pm25:.1f} µg/m³\n"
+            f"🏷️ <b>{category}</b>\n"
+            f"🕐 <b>{now}</b>"
+        )
     else:
-        msg = f"⚠️ Could not fetch AQI for {CITY} on {now}"
+        msg = f"⚠️ Could not fetch AQI for Beijing on {now}"
 
     send_to_telegram(msg)
 
