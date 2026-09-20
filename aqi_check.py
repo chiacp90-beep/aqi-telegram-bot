@@ -1,4 +1,5 @@
 import requests
+import json
 import os
 import logging
 from datetime import datetime
@@ -8,27 +9,31 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 
-# Beijing coordinates
-LAT = 39.9042
-LON = 116.4074
+# ── Putrajaya, Malaysia ──────────────────────────────────────
+LAT = 2.9333
+LON = 101.65
+TIMEZONE = "Asia%2FKuala_Lumpur"   # URL-encoded
 
 
 def get_aqi():
-    """Fetch PM2.5 using Open-Meteo Air Quality API."""
-    url = "https://api.open-meteo.com/v1/air-quality"
-    params = {
-        "latitude": LAT,
-        "longitude": LON,
-        "current_air_quality": "true",   # ← String "true", not Python True!
-        "timezone": "Asia/Shanghai",
-    }
+    """Fetch PM2.5 for Putrajaya using Open-Meteo API."""
+    # Manually build URL so "true" stays lowercase (avoids 404!)
+    url = (
+        f"https://api.open-meteo.com/v1/air-quality"
+        f"?latitude={LAT}"
+        f"&longitude={LON}"
+        f"&current_air_quality=true"
+        f"&timezone={TIMEZONE}"
+    )
+    logging.info(f"Requesting URL: {url}")
+
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = requests.get(url, timeout=15)
+        logging.info(f"Status code: {resp.status_code}")
         resp.raise_for_status()
         data = resp.json()
 
-        # Debug: print raw response to see the structure
-        logging.info(f"Raw response keys: {data.keys()}")
+        logging.info(f"Full response: {json.dumps(data)[:300]}")
 
         air_quality = data.get("current_air_quality", {})
         pm25 = air_quality.get("pm2_5")
@@ -72,20 +77,20 @@ def send_to_telegram(message):
 
 def main():
     now = datetime.now().strftime("%Y-%m-%d")
-    logging.info("Fetching AQI for Beijing...")
+    logging.info("Fetching AQI for Putrajaya...")
     pm25 = get_aqi()
 
     if pm25 is not None:
         category = get_category(pm25)
         msg = (
             f"🌅 <b>Morning AQI Report</b>\n"
-            f"📍 <b>Beijing</b>\n"
+            f"📍 <b>Putrajaya, Malaysia</b>\n"
             f"📊 <b>PM2.5:</b> {pm25:.1f} µg/m³\n"
             f"🏷️ <b>{category}</b>\n"
             f"🕐 <b>{now}</b>"
         )
     else:
-        msg = f"⚠️ Could not fetch AQI for Beijing on {now}"
+        msg = f"⚠️ Could not fetch AQI for Putrajaya on {now}"
 
     send_to_telegram(msg)
 
