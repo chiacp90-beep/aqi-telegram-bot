@@ -9,12 +9,22 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-WAQI_TOKEN = os.environ["WAQI_TOKEN"]
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+WAQI_TOKEN = os.environ.get("WAQI_TOKEN", "").strip()
 
-# Putrajaya station on aqicn.org (Malaysia DOE). Fallback: search by city name.
-STATION_CANDIDATES = ["@H10485", "putrajaya"]
+for _name, _val in [("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN),
+                    ("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID),
+                    ("WAQI_TOKEN", WAQI_TOKEN)]:
+    if not _val:
+        sys.exit(f"{_name} is empty: check the yml env block and the repo secret name")
+
+# Add or remove locations here. Station IDs come from each aqicn page's "Cloud API" section.
+LOCATIONS = [
+    {"name": "Putrajaya",                "station_ids": ["@H10485", "putrajaya"]},
+    {"name": "Kuantan (Indera Mahkota)", "station_ids": ["@H2592", "kuantan"]},
+    {"name": "Singapore East",           "station_ids": ["@H1664"]},
+]
 
 MYT = timezone(timedelta(hours=8))
 
@@ -27,9 +37,9 @@ def to_number(value):
         return None
 
 
-def get_aqi():
-    """Fetch current AQI for Putrajaya from the aqicn (WAQI) API."""
-    for station in STATION_CANDIDATES:
+def get_aqi(station_ids):
+    """Fetch current AQI from the aqicn (WAQI) API, trying each station ID in turn."""
+    for station in station_ids:
         url = f"https://api.waqi.info/feed/{station}/"
         for attempt in range(1, 4):
             try:
@@ -39,7 +49,6 @@ def get_aqi():
                 payload = resp.json()
 
                 if payload.get("status") != "ok":
-                    # e.g. {"status":"error","data":"Invalid key"} or "Unknown station"
                     logging.error(f"[{station}] API said: {payload}")
                     break  # no point retrying this station
 
@@ -50,7 +59,6 @@ def get_aqi():
                     "pm25": to_number(iaqi.get("pm25", {}).get("v")),
                     "pm10": to_number(iaqi.get("pm10", {}).get("v")),
                     "temp": to_number(iaqi.get("t", {}).get("v")),
-                    "station": data.get("city", {}).get("name", "Putrajaya"),
                     "updated": data.get("time", {}).get("s", ""),
                 }
                 if result["aqi"] is None:
@@ -84,6 +92,29 @@ def get_category(aqi):
         return "🟤 Hazardous"
 
 
+def format_location(name, r):
+    if not r:
+        return f"📍 <b>{html.escape(name)}</b>\n⚠️ Could not fetch AQI"
+
+    details = []
+    if r["pm25"] is not None:
+        details.append(f"PM2.5 {r['pm25']:.0f}")
+    if r["pm10"] is not None:
+        details.append(f"PM10 {r['pm10']:.0f}")
+    if r["temp"] is not None:
+        details.append(f"{r['temp']:.0f}°C")
+
+    lines = [
+        f"📍 <b>{html.escape(name)}</b>",
+        f"📊 AQI <b>{r['aqi']:.0f}</b> · {get_category(r['aqi'])}",
+    ]
+    if details:
+        lines.append(" · ".join(details))
+    if r["updated"]:
+        lines.append(f"🕐 {html.escape(r['updated'])}")
+    return "\n".join(lines)
+
+
 def send_to_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
@@ -94,37 +125,25 @@ def send_to_telegram(message):
 
 def main():
     today = datetime.now(MYT).strftime("%Y-%m-%d")
-    logging.info("Fetching AQI for Putrajaya...")
-    r = get_aqi()
+    blocks = [f"🌅 <b>Morning AQI Report</b> · {today}"]
+    failed = 0
 
-    if r:
-        lines = [
-            "🌅 <b>Morning AQI Report</b>",
-            f"📍 <b>{html.escape(r['station'])}</b>",
-            f"📊 <b>Overall AQI:</b> {r['aqi']:.0f}",
-            f"🏷️ <b>{get_category(r['aqi'])}</b>",
-        ]
-        if r["pm25"] is not None:
-            lines.append(f"🌫️ PM2.5 AQI: {r['pm25']:.0f}")
-        if r["pm10"] is not None:
-            lines.append(f"💨 PM10 AQI: {r['pm10']:.0f}")
-        if r["temp"] is not None:
-            lines.append(f"🌡️ Temp: {r['temp']:.0f}°C")
-        if r["updated"]:
-            lines.append(f"🕐 Station update: {html.escape(r['updated'])}")
-        else:
-            lines.append(f"🕐 {today}")
-        msg = "\n".join(lines)
-    else:
-        msg = f"⚠️ Could not fetch AQI for Putrajaya on {today}"
+    for loc in LOCATIONS:
+        logging.info(f"Fetching AQI for {loc['name']}...")
+        r = get_aqi(loc["station_ids"])
+        if not r:
+            failed += 1
+        blocks.append(format_location(loc["name"], r))
+
+    message = "\n\n".join(blocks)
 
     try:
-        send_to_telegram(msg)
+        send_to_telegram(message)
     except Exception as e:
         logging.error(f"Telegram error: {e}")
         sys.exit(1)
 
-    if not r:
+    if failed:
         sys.exit(1)  # makes the GitHub Action show red so you notice
 
 
