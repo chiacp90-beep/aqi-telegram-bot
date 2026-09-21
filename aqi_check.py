@@ -124,8 +124,8 @@ def send_to_telegram(message):
 
 
 def main():
-    today = datetime.now(MYT).strftime("%Y-%m-%d")
-    blocks = [f"🌅 <b>Morning AQI Report</b> · {today}"]
+    now = datetime.now(MYT).strftime("%Y-%m-%d %H:%M")
+    blocks = [f"🌤️ <b>AQI Update</b> · {now} MYT"]
     failed = 0
 
     for loc in LOCATIONS:
