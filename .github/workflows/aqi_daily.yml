@@ -2,7 +2,7 @@ name: Daily AQI Check
 
 on:
   schedule:
-    - cron: "0 23 * * *"   # 23:00 UTC = 7:00 AM Malaysia time
+    - cron: "0 21 * * *"   # 21:00 UTC = 5:00 AM Malaysia time
   workflow_dispatch:        # allows manual runs
 
 jobs:
